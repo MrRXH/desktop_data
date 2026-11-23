@@ -1,4 +1,4 @@
-/* 毕业设计文献检索与分类助手 - V3.1 核心逻辑（固定目录导出手机随身版 + 自动查重 + 正文夹注） */
+/* 毕业设计文献检索与分类助手 - V4 核心逻辑（完整 PDF 论文导入 + 原文打开 + 固定目录手机版导出 + 查重 + 正文夹注） */
 (function () {
   "use strict";
 
@@ -84,6 +84,64 @@
     return state.library.papers.find((p) => p.id !== excludeId && normalizeTitle(p.title) === norm) || null;
   }
 
+  function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  /* ==================== V4 新增：PDF 原文归档与一键打开 ==================== */
+  async function uploadPdfToLibrary(file) {
+    if (state.serverMode) {
+      const b64 = await fileToDataUrl(file);
+      const res = await fetch("/api/upload-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, base64: b64 })
+      });
+      if (!res.ok) throw new Error("上传 PDF 失败");
+      return await res.json();
+    }
+    if (state.dirHandle) {
+      const dataDir = await state.dirHandle.getDirectoryHandle("data", { create: true });
+      const pdfDir = await dataDir.getDirectoryHandle("pdfs", { create: true });
+      const safeName = file.name.replace(/[\\/:*?"<>|]+/g, "_");
+      const fh = await pdfDir.getFileHandle(safeName, { create: true });
+      const writable = await fh.createWritable();
+      await writable.write(file);
+      await writable.close();
+      return { ok: true, pdf_file: `data/pdfs/${safeName}`, filename: safeName };
+    }
+    throw new Error("请使用桌面软件（或先连接本地文件夹）后再导入完整 PDF 论文");
+  }
+
+  async function openAttachedPdf(pdfFile) {
+    if (!pdfFile) return;
+    if (state.serverMode) {
+      try {
+        const res = await fetch("/api/open-pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pdf_file: pdfFile })
+        });
+        if (res.ok) {
+          showToast("已用系统默认阅读器打开 PDF 原文");
+          return;
+        }
+        const err = await res.json();
+        showToast(err.error || "打开 PDF 失败");
+      } catch (_) {
+        showToast("打开 PDF 失败，请检查文件是否存在");
+      }
+      return;
+    }
+    showToast(`PDF 原文保存在桌面文件夹：${pdfFile}`);
+  }
+
+  /* ==================== Markdown 排版渲染 ==================== */
   function formatInlineMd(text) {
     return escapeHtml(text)
       .replace(/`([^`]+)`/g, "<code>$1</code>")
@@ -102,8 +160,7 @@
 
       const hMatch = trimmed.match(/^(#{1,3})\s+(.*)$/);
       if (hMatch) {
-        const level = hMatch[1].length;
-        html.push(`<h${level}>${formatInlineMd(hMatch[2])}</h${level}>`);
+        html.push(`<h${hMatch[1].length}>${formatInlineMd(hMatch[2])}</h${hMatch[1].length}>`);
         i++;
         continue;
       }
@@ -176,6 +233,7 @@
     return html.join("\n") || '<p class="muted">（空白文档）</p>';
   }
 
+  /* ==================== 本地存储与同步 ==================== */
   function loadLocalCache() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -207,6 +265,7 @@
 - **分类**：${catName}
 - **标签**：${tags}
 - **阅读状态**：${paper.status || "待读"}
+- **PDF 原文**：\`${paper.pdf_file || "未绑定"}\`
 
 ## 摘要
 ${paper.abstract || "（暂无摘要）"}
@@ -343,6 +402,7 @@ ${n.personal_notes || "（待补充）"}
     }
   }
 
+  /* ==================== 引文生成与解析 ==================== */
   function extractEnSurname(name) {
     const s = String(name || "").trim();
     if (!s) return "";
@@ -529,7 +589,7 @@ ${n.personal_notes || "（待补充）"}
     return parseGbtLines(txt);
   }
 
-  /* ==================== V3.1 手机离线随身版导出（直写固定目录） ==================== */
+  /* ==================== 手机离线随身版导出 ==================== */
   async function collectWorkspaceDocs() {
     const docs = [];
     if (state.serverMode) {
@@ -763,6 +823,7 @@ renderCats(); renderPapers(); renderDocs();
     showToast(`已导出「${filename}」，发到手机浏览器即可离线查看`);
   }
 
+  /* ==================== 筛选与主界面渲染 ==================== */
   function getFilteredPapers() {
     const q = state.searchQuery.trim().toLowerCase();
     const list = state.library.papers.filter((p) => {
@@ -870,6 +931,7 @@ renderCats(); renderPapers(); renderDocs();
         <div class="paper-card-meta">${escapeHtml(authors)} · ${escapeHtml(p.journal || "未知来源")} ${p.year ? `(${escapeHtml(p.year)})` : ""}</div>
         <div class="paper-card-foot">
           <span class="badge badge-status-${escapeHtml(p.status || "待读")}">${escapeHtml(p.status || "待读")}</span>
+          ${p.pdf_file ? '<span class="badge badge-pdf">PDF</span>' : ""}
           ${hasNotes ? '<span class="badge badge-note">有笔记</span>' : ""}
           ${(p.tags || []).slice(0, 3).map((t) => `<span class="badge">${escapeHtml(t)}</span>`).join("")}
         </div>
@@ -924,6 +986,20 @@ renderCats(); renderPapers(); renderDocs();
     $("previewGbt").textContent = formatGbt7714(p);
     $("previewApa").textContent = formatApa(p);
     $("detailAbstract").textContent = p.abstract || "（暂无摘要，可点击上方「编辑信息」补充）";
+
+    // V4 PDF 原文状态更新
+    const pdfStatus = $("pdfStatusText");
+    if (p.pdf_file) {
+      pdfStatus.textContent = `已归档原文：${p.pdf_file}（AI 新对话可直接读取此 PDF 全文）`;
+      pdfStatus.classList.add("attached");
+      $("btnOpenPdf").classList.remove("hidden");
+      $("btnUnlinkPdf").classList.remove("hidden");
+    } else {
+      pdfStatus.textContent = "尚未绑定 PDF 原文（上传后自动归档至 data/pdfs/，AI 新对话可直接读全文）";
+      pdfStatus.classList.remove("attached");
+      $("btnOpenPdf").classList.add("hidden");
+      $("btnUnlinkPdf").classList.add("hidden");
+    }
 
     const n = p.notes || {};
     $("noteCore").value = n.core_viewpoint || "";
@@ -1001,23 +1077,23 @@ renderCats(); renderPapers(); renderDocs();
         ? `分类「${state.library.categories.find((c) => c.id === state.filterCategoryId)?.name || ""}」下的 ${filteredPapers.length} 篇文献`
         : `当前视图中的 ${filteredPapers.length} 篇文献`;
 
-    const idList = targetPapers.map((p) => `${p.id}（${p.title}）`).join("；");
+    const idList = targetPapers.map((p) => `${p.id}（${p.title}${p.pdf_file ? `，原文：${p.pdf_file}` : ""}）`).join("；");
     const emptyNotePapers = state.library.papers.filter(
       (p) => !p.notes || (!p.notes.core_viewpoint && !p.notes.methodology && !p.notes.limitations)
     );
 
-    $("promptContextSummary").textContent = `当前作用范围：${scopeLabel}（想指定特定几篇，可先在中栏列表勾选复选框）`;
+    $("promptContextSummary").textContent = `当前作用范围：${scopeLabel}（已绑定 PDF 的文献会自动附带原文路径供 AI 深读）`;
 
     const cards = [
       {
         title: "1. 生成主题文献综述草稿",
-        desc: "按研究脉络串联观点（不写流水账），文末自动附国标参考文献。",
-        prompt: `请先阅读当前文件夹中的 AI_GUIDE.md 和 data/library.json。针对以下文献：${idList}，帮我写一份结构清晰的主题文献综述草稿（按研究脉络与学术争议组织，文中标注作者和年份，文末附 GB/T 7714 参考文献），并将结果保存为新的 Markdown 文件放进 writing_workspace/ 目录。`
+        desc: "优先深读已绑定的完整 PDF 原文，按研究脉络串联观点并附国标引文。",
+        prompt: `请先阅读当前文件夹中的 AI_GUIDE.md 和 data/library.json（若文献包含 pdf_file 请优先读取完整 PDF 原文）。针对以下文献：${idList}，帮我写一份结构清晰的主题文献综述草稿（按研究脉络与学术争议组织，文中标注作者和年份，文末附 GB/T 7714 参考文献），并将结果保存为新的 Markdown 文件放进 writing_workspace/ 目录。`
       },
       {
         title: "2. 多篇文献观点 / 方法 / 局限对比表",
-        desc: "生成标准 Markdown 对比表 + 可切入的毕业论文创新点。",
-        prompt: `请先阅读当前文件夹中的 AI_GUIDE.md 和 data/library.json。针对以下文献：${idList}，制作一份多维对比表（列：作者与年份、核心观点、研究方法与样本、主要局限），并在表后总结 2-3 个适合我毕业论文切入的研究缺口，保存到 writing_workspace/ 目录中。`
+        desc: "结合 PDF 全文细节生成标准对比表 + 毕业论文创新切入点。",
+        prompt: `请先阅读当前文件夹中的 AI_GUIDE.md 和 data/library.json（有 pdf_file 的请优先读原文）。针对以下文献：${idList}，制作一份多维对比表（列：作者与年份、核心观点、研究方法与样本、主要局限），并在表后总结 2-3 个适合我毕业论文切入的研究缺口，保存到 writing_workspace/ 目录中。`
       },
       {
         title: "3. 结合文献库梳理毕业论文大纲",
@@ -1025,12 +1101,12 @@ renderCats(); renderPapers(); renderDocs();
         prompt: `请阅读当前文件夹中的 AI_GUIDE.md 和 data/library.json 中全部文献与笔记，结合人文社科/经管毕业论文规范，帮我梳理一份带二级标题的毕业论文大纲，注明每一章可引用哪些已有文献，并指出目前文献库中还缺少哪类支撑文献，结果保存到 writing_workspace/ 目录。`
       },
       {
-        title: `4. 批量提炼空白笔记（待处理 ${emptyNotePapers.length} 篇）`,
-        desc: "让 AI 自动根据摘要补全「核心观点 / 方法 / 局限」并写回本地库。",
+        title: `4. 批量读 PDF / 摘要提炼笔记（待处理 ${emptyNotePapers.length} 篇）`,
+        desc: "让 AI 自动读取 PDF 原文或摘要，补全四维笔记并写回本地库。",
         prompt:
           emptyNotePapers.length > 0
-            ? `请阅读当前文件夹中的 AI_GUIDE.md 和 data/library.json。请帮我为以下尚未填写笔记的文献提炼「核心观点」「研究方法」「主要局限」，直接更新写回 data/library.json 和 data/notes/ 对应文件：${emptyNotePapers.map((p) => `${p.id}（${p.title}）`).join("；")}。`
-            : `请阅读当前文件夹中的 AI_GUIDE.md 和 data/library.json，检查现有全部文献的「核心观点」「研究方法」「主要局限」笔记是否完整，帮我补充更精准的学术表述并写回 data/library.json。`
+            ? `请阅读当前文件夹中的 AI_GUIDE.md 和 data/library.json。请帮我为以下尚未填写笔记的文献（有 pdf_file 的请直接读取完整 PDF 全文）提炼「核心观点」「研究方法」「主要局限」，直接更新写回 data/library.json 和 data/notes/ 对应文件：${emptyNotePapers.map((p) => `${p.id}（${p.title}${p.pdf_file ? `，原文：${p.pdf_file}` : ""}）`).join("；")}。`
+            : `请阅读当前文件夹中的 AI_GUIDE.md 和 data/library.json，结合已绑定的 PDF 原文检查现有文献笔记，帮我补充更精准的学术表述并写回 data/library.json。`
       }
     ];
 
@@ -1178,6 +1254,105 @@ renderCats(); renderPapers(); renderDocs();
       window.open(q ? `https://scholar.google.com/scholar?q=${q}` : "https://scholar.google.com/", "_blank");
     });
 
+    // V4 批量导入完整 PDF 论文
+    $("inputBatchPdf").addEventListener("change", async (e) => {
+      const files = Array.from(e.target.files || []);
+      e.target.value = "";
+      if (!files.length) return;
+      showToast(`正在归档导入 ${files.length} 篇完整 PDF 论文...`);
+      const catId = state.filterType === "category" ? state.filterCategoryId : (state.library.categories[0]?.id || "");
+      const existingSet = new Set(state.library.papers.map((p) => normalizeTitle(p.title)));
+      const ts = nowIso();
+      let added = 0;
+      let skipped = 0;
+
+      for (let idx = 0; idx < files.length; idx++) {
+        const f = files[idx];
+        const cleanTitle = f.name.replace(/\.pdf$/i, "").replace(/_/g, " ").trim() || "未命名 PDF 论文";
+        const norm = normalizeTitle(cleanTitle);
+        if (norm && existingSet.has(norm)) {
+          skipped++;
+          continue;
+        }
+        try {
+          const uploaded = await uploadPdfToLibrary(f);
+          if (norm) existingSet.add(norm);
+          const paper = {
+            id: `paper_${Date.now()}_${idx}`,
+            title: cleanTitle,
+            authors: [],
+            journal: "",
+            year: String(new Date().getFullYear()),
+            volume: "",
+            issue: "",
+            pages: "",
+            doc_type: "J",
+            language: detectLanguage(cleanTitle),
+            source: "PDF 原文导入",
+            doi: "",
+            url: "",
+            pdf_file: uploaded.pdf_file,
+            abstract: "",
+            category_id: catId,
+            tags: ["待读"],
+            status: "待读",
+            starred: false,
+            notes: { core_viewpoint: "", methodology: "", limitations: "", personal_notes: "" },
+            created_at: ts,
+            updated_at: ts
+          };
+          state.library.papers.unshift(paper);
+          state.selectedPaperId = paper.id;
+          added++;
+        } catch (err) {
+          showToast(err.message || "PDF 导入失败");
+          break;
+        }
+      }
+
+      if (added > 0) await persistLibrary();
+      renderAll();
+      if (added > 0 && skipped > 0) showToast(`已导入 ${added} 篇 PDF 论文，跳过 ${skipped} 篇重复`);
+      else if (added > 0) showToast(`成功导入 ${added} 篇完整 PDF 论文，已归档至 data/pdfs/`);
+      else if (skipped > 0) showToast(`所选 ${skipped} 篇 PDF 论文已存在，已自动跳过`);
+    });
+
+    // V4 单篇文献上传/更换 PDF、打开原文、解除绑定
+    $("inputAttachPdf").addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      e.target.value = "";
+      if (!file) return;
+      const p = state.library.papers.find((x) => x.id === state.selectedPaperId);
+      if (!p) return;
+      try {
+        showToast("正在归档 PDF 原文...");
+        const uploaded = await uploadPdfToLibrary(file);
+        p.pdf_file = uploaded.pdf_file;
+        p.updated_at = nowIso();
+        await persistLibrary(p);
+        renderAll();
+        showToast(`已绑定 PDF 原文：${uploaded.filename}`);
+      } catch (err) {
+        showToast(err.message || "绑定 PDF 失败");
+      }
+    });
+
+    $("btnOpenPdf").addEventListener("click", () => {
+      const p = state.library.papers.find((x) => x.id === state.selectedPaperId);
+      if (p?.pdf_file) openAttachedPdf(p.pdf_file);
+    });
+
+    $("btnUnlinkPdf").addEventListener("click", async () => {
+      const p = state.library.papers.find((x) => x.id === state.selectedPaperId);
+      if (!p || !p.pdf_file) return;
+      if (!confirm("确定解除该文献的 PDF 原文绑定吗？（本地 data/pdfs/ 中的文件会保留）")) return;
+      p.pdf_file = "";
+      p.updated_at = nowIso();
+      await persistLibrary(p);
+      renderAll();
+      showToast("已解除 PDF 绑定");
+    });
+
     $("btnOpenImport").addEventListener("click", () => {
       fillCategorySelect("importCategorySelect", state.filterType === "category" ? state.filterCategoryId : "");
       $("importRawText").value = "";
@@ -1204,6 +1379,7 @@ renderCats(); renderPapers(); renderDocs();
         const paper = {
           id: `paper_${baseMs}_${idx}`,
           ...it,
+          pdf_file: "",
           category_id: catId,
           tags: ["待读"], status: "待读", starred: false,
           notes: { core_viewpoint: "", methodology: "", limitations: "", personal_notes: "" },
@@ -1251,7 +1427,7 @@ renderCats(); renderPapers(); renderDocs();
       } else {
         savedPaper = {
           id: `paper_${Date.now()}`,
-          ...payload, doi: "", url: "",
+          ...payload, doi: "", url: "", pdf_file: "",
           tags: ["待读"], status: "待读", starred: false,
           notes: { core_viewpoint: "", methodology: "", limitations: "", personal_notes: "" },
           created_at: ts, updated_at: ts
@@ -1367,7 +1543,8 @@ renderCats(); renderPapers(); renderDocs();
     $("btnCopyAiPrompt").addEventListener("click", () => {
       const p = state.library.papers.find((x) => x.id === state.selectedPaperId);
       if (!p) return;
-      const promptText = `请阅读当前文件夹中的 AI_GUIDE.md 和 data/library.json，帮我针对文献《${p.title}》（ID: ${p.id}）提炼「核心观点」「研究方法」「主要局限」，并直接写回 data/library.json 和 data/notes/${p.id}.md 中。`;
+      const pdfHint = p.pdf_file ? `请优先直接读取它的完整 PDF 原文（${p.pdf_file}），` : "";
+      const promptText = `请阅读当前文件夹中的 AI_GUIDE.md 和 data/library.json。针对文献《${p.title}》（ID: ${p.id}），${pdfHint}帮我提炼「核心观点」「研究方法」「主要局限」，并直接写回 data/library.json 和 data/notes/${p.id}.md 中。`;
       copyText(promptText, "已复制 AI 协作指令，直接粘贴到新对话即可");
     });
 

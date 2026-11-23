@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-毕业设计文献检索与分类助手 - Mac / Windows 独立桌面软件入口 (V3.1)
-新增：手机随身版固定保存到 桌面/文献检索软件/mobile_export/ 并自动打开文件夹定位。
+毕业设计文献检索与分类助手 - Mac / Windows 独立桌面软件入口 (V4 完整论文版)
+支持：完整 PDF 论文归档至 data/pdfs/、一键系统默认阅读器打开原文、手机随身版固定目录导出。
 """
 
+import base64
 import json
+import os
 import re
 import shutil
 import socket
@@ -37,13 +39,13 @@ RESOURCE_DIR = get_resource_dir()
 USER_ROOT = get_user_data_root()
 DATA_DIR = USER_ROOT / "data"
 NOTES_DIR = DATA_DIR / "notes"
+PDF_DIR = DATA_DIR / "pdfs"
 WORKSPACE_DIR = USER_ROOT / "writing_workspace"
 EXPORT_DIR = USER_ROOT / "mobile_export"
 LIBRARY_FILE = DATA_DIR / "library.json"
 
 
 def reveal_file(target: Path) -> None:
-    """在 Mac 访达或 Windows 资源管理器中自动打开并高亮选中导出文件。"""
     try:
         if sys.platform == "darwin":
             subprocess.Popen(["open", "-R", str(target)])
@@ -53,9 +55,28 @@ def reveal_file(target: Path) -> None:
         pass
 
 
+def open_file_default(target: Path) -> None:
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(target)])
+        elif sys.platform == "win32":
+            os.startfile(str(target))
+    except Exception:
+        pass
+
+
+def sanitize_pdf_filename(raw_name: str) -> str:
+    name = Path(str(raw_name or "paper.pdf")).name
+    name = re.sub(r'[\\/:*?"<>|]+', "_", name).strip()
+    if not name.lower().endswith(".pdf"):
+        name += ".pdf"
+    return name or "paper.pdf"
+
+
 def init_user_workspace() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    PDF_DIR.mkdir(parents=True, exist_ok=True)
     WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -101,6 +122,7 @@ def sync_all_notes(data: dict) -> None:
         authors = ("、" if p.get("language") == "zh" else ", ").join(p.get("authors", [])) or "未知"
         cat_name = cat_map.get(p.get("category_id", ""), "未分类")
         tags = ", ".join(p.get("tags", [])) or "无"
+        pdf_file = p.get("pdf_file", "") or "未绑定"
         n = p.get("notes") or {}
         md = f"""# {p.get("title", "未命名文献")}
 
@@ -112,6 +134,7 @@ def sync_all_notes(data: dict) -> None:
 - **分类**：{cat_name}
 - **标签**：{tags}
 - **阅读状态**：{p.get("status", "待读")}
+- **PDF 原文**：`{pdf_file}`
 
 ## 摘要
 {p.get("abstract", "") or "（暂无摘要）"}
@@ -153,6 +176,11 @@ class DesktopLitHandler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _read_json(self) -> dict:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length).decode("utf-8")
+        return json.loads(raw)
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
@@ -201,9 +229,7 @@ class DesktopLitHandler(SimpleHTTPRequestHandler):
     def do_PUT(self):
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/library":
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length).decode("utf-8")
-            data = json.loads(raw)
+            data = self._read_json()
             LIBRARY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             sync_all_notes(data)
             self._send_json({"ok": True})
@@ -212,10 +238,9 @@ class DesktopLitHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
+
         if path == "/api/export-mobile":
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length).decode("utf-8")
-            payload = json.loads(raw)
+            payload = self._read_json()
             filename = Path(str(payload.get("filename") or "文献随身版.html")).name
             if not filename.endswith(".html"):
                 filename += ".html"
@@ -226,6 +251,41 @@ class DesktopLitHandler(SimpleHTTPRequestHandler):
             reveal_file(target)
             self._send_json({"ok": True, "filename": filename, "path": str(target)})
             return
+
+        if path == "/api/upload-pdf":
+            payload = self._read_json()
+            safe_name = sanitize_pdf_filename(payload.get("filename", "paper.pdf"))
+            b64 = str(payload.get("base64") or "")
+            if "," in b64:
+                b64 = b64.split(",", 1)[1]
+            pdf_bytes = base64.b64decode(b64)
+            PDF_DIR.mkdir(parents=True, exist_ok=True)
+            stem = Path(safe_name).stem
+            target = PDF_DIR / safe_name
+            counter = 2
+            while target.exists():
+                target = PDF_DIR / f"{stem}_{counter}.pdf"
+                counter += 1
+            target.write_bytes(pdf_bytes)
+            self._send_json(
+                {"ok": True, "pdf_file": f"data/pdfs/{target.name}", "filename": target.name}
+            )
+            return
+
+        if path == "/api/open-pdf":
+            payload = self._read_json()
+            rel = str(payload.get("pdf_file") or "").strip()
+            if not rel:
+                self._send_json({"error": "未指定 PDF 路径"}, 400)
+                return
+            target = (USER_ROOT / rel).resolve()
+            if not str(target).startswith(str(PDF_DIR.resolve())) or not target.exists():
+                self._send_json({"error": "未找到对应的 PDF 文件"}, 404)
+                return
+            open_file_default(target)
+            self._send_json({"ok": True})
+            return
+
         self._send_json({"error": "未知接口"}, 404)
 
 

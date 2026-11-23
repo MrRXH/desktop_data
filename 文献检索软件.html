@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>毕业设计文献检索与分类助手（V3 试运行版）</title>
+  <title>毕业设计文献检索与分类助手（V4 完整论文版）</title>
   <link rel="stylesheet" href="./app/styles.css" />
 </head>
 <body>
@@ -11,7 +11,7 @@
     <!-- 顶部工具栏 -->
     <header class="topbar">
       <div class="brand">
-        <span class="brand-badge">V3</span>
+        <span class="brand-badge">V4</span>
         <div>
           <h1>毕业设计文献助手</h1>
           <p class="brand-sub" id="syncStatusText">未连接本地文件夹（推荐使用本地服务打开）</p>
@@ -28,6 +28,10 @@
         <button class="btn btn-primary" id="btnConnectFolder" title="选择桌面的「文献检索软件」文件夹，实现实时读写同步">连接文件夹</button>
         <button class="btn btn-outline" id="btnRefreshSync" title="当 AI 在新对话中修改完文件后，点此立即同步最新内容">刷新同步</button>
         <button class="btn btn-accent" id="btnOpenImport">引文导入</button>
+        <label class="btn btn-pdf" title="直接导入 1 篇或多篇完整 PDF 论文，自动归档并建条目">
+          导入 PDF
+          <input type="file" id="inputBatchPdf" accept=".pdf" multiple hidden />
+        </label>
         <button class="btn btn-outline" id="btnAddPaper">+ 手动录入</button>
         <button class="btn btn-ai" id="btnOpenAiPrompts" title="一键生成给新对话 AI 的写论文指令">写论文指令板</button>
         <button class="btn btn-outline" id="btnOpenWorkspace">论文产出区</button>
@@ -159,6 +163,22 @@
               <div class="cite-row"><span class="cite-badge">GB/T</span><span id="previewGbt"></span></div>
               <div class="cite-row"><span class="cite-badge">APA</span><span id="previewApa"></span></div>
             </div>
+          </div>
+
+          <!-- 完整 PDF 论文原文卡片（V4 新增） -->
+          <div class="card pdf-card">
+            <div class="card-head">
+              <h3>完整论文原文（PDF）</h3>
+              <div class="citation-actions">
+                <button class="btn btn-sm btn-primary hidden" id="btnOpenPdf">打开阅读原文</button>
+                <label class="btn btn-sm btn-outline" id="lblUploadPdf">
+                  上传绑定 PDF
+                  <input type="file" id="inputAttachPdf" accept=".pdf" hidden />
+                </label>
+                <button class="btn btn-sm btn-danger-ghost hidden" id="btnUnlinkPdf">解除绑定</button>
+              </div>
+            </div>
+            <div class="pdf-status-bar" id="pdfStatusText">尚未绑定 PDF 原文（上传后自动归档至 data/pdfs/，AI 新对话可直接读全文）</div>
           </div>
 
           <!-- 摘要 -->
