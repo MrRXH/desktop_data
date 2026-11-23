@@ -1,4 +1,4 @@
-/* 毕业设计文献检索与分类助手 - V3 核心逻辑（手机离线随身版导出 + 导入自动查重 + 正文夹注复制） */
+/* 毕业设计文献检索与分类助手 - V3.1 核心逻辑（固定目录导出手机随身版 + 自动查重 + 正文夹注） */
 (function () {
   "use strict";
 
@@ -57,7 +57,7 @@
     el.textContent = msg;
     el.classList.remove("hidden");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.add("hidden"), 2800);
+    toastTimer = setTimeout(() => el.classList.add("hidden"), 3000);
   }
 
   function detectLanguage(text) {
@@ -72,7 +72,6 @@
       .replace(/"/g, "&quot;");
   }
 
-  /* ==================== V3 新增：标题归一化查重 ==================== */
   function normalizeTitle(title) {
     return String(title || "")
       .toLowerCase()
@@ -85,7 +84,6 @@
     return state.library.papers.find((p) => p.id !== excludeId && normalizeTitle(p.title) === norm) || null;
   }
 
-  /* ==================== 轻量 Markdown 表格与排版渲染器 ==================== */
   function formatInlineMd(text) {
     return escapeHtml(text)
       .replace(/`([^`]+)`/g, "<code>$1</code>")
@@ -178,7 +176,6 @@
     return html.join("\n") || '<p class="muted">（空白文档）</p>';
   }
 
-  /* ==================== 本地存储与同步 ==================== */
   function loadLocalCache() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -248,7 +245,7 @@ ${n.personal_notes || "（待补充）"}
         });
         if (!res.ok) throw new Error("保存接口返回异常");
       } catch (_) {
-        showToast("同步到本机服务失败，请重新点击桌面「文献助手」图标启动");
+        showToast("同步到本机服务失败，请重新打开软件");
       }
       return;
     }
@@ -287,13 +284,13 @@ ${n.personal_notes || "（待补充）"}
           return true;
         }
       } catch (_) {
-        showToast("无法连接本机服务，请点击桌面「文献助手」图标启动");
+        showToast("无法连接本机服务");
       }
       return false;
     }
 
     if (!state.dirHandle) {
-      showToast("Safari 用户请点击「文献助手」快捷指令图标启动，即可自动同步");
+      showToast("请先连接本地文件夹");
       return false;
     }
     try {
@@ -326,7 +323,7 @@ ${n.personal_notes || "（待补充）"}
       return;
     }
     if (!window.showDirectoryPicker) {
-      showToast("Safari 请通过「文献助手」图标启动本机服务即可自动同步");
+      showToast("当前浏览器不支持直接连接文件夹");
       return;
     }
     try {
@@ -346,7 +343,6 @@ ${n.personal_notes || "（待补充）"}
     }
   }
 
-  /* ==================== V3 引文格式生成（正文夹注 + GB/T 7714 + APA） ==================== */
   function extractEnSurname(name) {
     const s = String(name || "").trim();
     if (!s) return "";
@@ -414,7 +410,6 @@ ${n.personal_notes || "（待补充）"}
     return `${authorStr} ${yearStr}. ${p.title}. ${p.journal || ""}${volIssue}${pagesStr}.${doiStr}`.replace(/\s+\./g, ".");
   }
 
-  /* ==================== 知网 & 谷歌学术引文解析器 ==================== */
   function parseBibtex(raw) {
     const entries = [];
     const blocks = raw.trim().split(/(?=@\w+\s*\{)/);
@@ -534,7 +529,7 @@ ${n.personal_notes || "（待补充）"}
     return parseGbtLines(txt);
   }
 
-  /* ==================== V3 新增：一键导出手机离线随身版 ==================== */
+  /* ==================== V3.1 手机离线随身版导出（直写固定目录） ==================== */
   async function collectWorkspaceDocs() {
     const docs = [];
     if (state.serverMode) {
@@ -590,6 +585,7 @@ ${n.personal_notes || "（待补充）"}
 
     const safeJson = JSON.stringify(payload).replace(/<\//g, "<\\/");
     const dateStr = nowIso().slice(0, 10);
+    const filename = `文献随身版_${dateStr}.html`;
 
     const mobileHtml = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -656,7 +652,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei
 <div class="wrap hidden" id="docsWrap"></div>
 <script>
 const DATA = ${safeJson};
-let curCat = "all", curTab = "papers", query = "";
+let curCat = "all", query = "";
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 $("metaInfo").textContent = DATA.papers.length + " 篇 · " + DATA.exportedAt.slice(5,16);
@@ -728,13 +724,11 @@ function renderDocs(){
 }
 
 $("tabPapers").onclick = () => {
-  curTab = "papers";
   $("tabPapers").classList.add("active"); $("tabDocs").classList.remove("active");
   $("q").classList.remove("hidden"); $("catsBar").classList.remove("hidden");
   $("papersWrap").classList.remove("hidden"); $("docsWrap").classList.add("hidden");
 };
 $("tabDocs").onclick = () => {
-  curTab = "docs";
   $("tabDocs").classList.add("active"); $("tabPapers").classList.remove("active");
   $("q").classList.add("hidden"); $("catsBar").classList.add("hidden");
   $("papersWrap").classList.add("hidden"); $("docsWrap").classList.remove("hidden");
@@ -745,17 +739,30 @@ renderCats(); renderPapers(); renderDocs();
 </body>
 </html>`;
 
+    if (state.serverMode) {
+      try {
+        const res = await fetch("/api/export-mobile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename, html: mobileHtml })
+        });
+        if (res.ok) {
+          showToast(`已保存到桌面「文献检索软件/mobile_export/${filename}」并已打开文件夹`);
+          return;
+        }
+      } catch (_) {}
+    }
+
     const blob = new Blob([mobileHtml], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `文献随身版_${dateStr}.html`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
-    showToast(`已导出「文献随身版_${dateStr}.html」，发到手机浏览器即可离线查看`);
+    showToast(`已导出「${filename}」，发到手机浏览器即可离线查看`);
   }
 
-  /* ==================== 筛选与主界面渲染 ==================== */
   function getFilteredPapers() {
     const q = state.searchQuery.trim().toLowerCase();
     const list = state.library.papers.filter((p) => {
@@ -983,7 +990,6 @@ renderCats(); renderPapers(); renderDocs();
     openModal("modalPaperForm");
   }
 
-  /* ==================== AI 写论文快捷指令板 ==================== */
   function openAiPromptsModal() {
     const checkedPapers = state.library.papers.filter((p) => state.checkedIds.has(p.id));
     const filteredPapers = getFilteredPapers();
@@ -1047,7 +1053,6 @@ renderCats(); renderPapers(); renderDocs();
     openModal("modalAiPrompts");
   }
 
-  /* ==================== 论文产出区排版预览 ==================== */
   function setWorkspaceContent(name, content) {
     state.currentWsRaw = content || "";
     $("workspaceFileTitle").textContent = name || "未选择文档";
@@ -1103,7 +1108,7 @@ renderCats(); renderPapers(); renderDocs();
     }
 
     if (!state.dirHandle) {
-      setWorkspaceContent("尚未连接本地文件夹", "点击桌面「文献助手」图标在 Safari 打开，即可自动浏览 writing_workspace 目录下的所有论文文档。");
+      setWorkspaceContent("尚未连接本地文件夹", "连接本地文件夹后即可浏览 writing_workspace 目录下的所有论文文档。");
       return;
     }
     try {
@@ -1179,7 +1184,6 @@ renderCats(); renderPapers(); renderDocs();
       openModal("modalImport");
     });
 
-    // V3 批量导入自动查重
     $("btnRunImport").addEventListener("click", async () => {
       const items = parseCitations($("importRawText").value);
       if (items.length === 0) {
@@ -1195,10 +1199,7 @@ renderCats(); renderPapers(); renderDocs();
 
       items.forEach((it, idx) => {
         const norm = normalizeTitle(it.title);
-        if (norm && existingSet.has(norm)) {
-          skippedCount++;
-          return;
-        }
+        if (norm && existingSet.has(norm)) { skippedCount++; return; }
         if (norm) existingSet.add(norm);
         const paper = {
           id: `paper_${baseMs}_${idx}`,
@@ -1217,13 +1218,9 @@ renderCats(); renderPapers(); renderDocs();
       closeModal("modalImport");
       renderAll();
 
-      if (addedCount === 0 && skippedCount > 0) {
-        showToast(`这 ${skippedCount} 篇文献均已存在，已自动跳过重复项`);
-      } else if (skippedCount > 0) {
-        showToast(`成功导入 ${addedCount} 篇，已自动跳过 ${skippedCount} 篇重复文献`);
-      } else {
-        showToast(`成功解析并导入 ${addedCount} 篇文献`);
-      }
+      if (addedCount === 0 && skippedCount > 0) showToast(`这 ${skippedCount} 篇文献均已存在，已自动跳过重复项`);
+      else if (skippedCount > 0) showToast(`成功导入 ${addedCount} 篇，已自动跳过 ${skippedCount} 篇重复文献`);
+      else showToast(`成功解析并导入 ${addedCount} 篇文献`);
     });
 
     $("btnAddPaper").addEventListener("click", () => openPaperForm(null));
@@ -1232,14 +1229,11 @@ renderCats(); renderPapers(); renderDocs();
       if (p) openPaperForm(p);
     });
 
-    // V3 手动录入查重提醒
     $("btnSubmitPaperForm").addEventListener("click", async () => {
       const title = $("fTitle").value.trim();
       if (!title) { showToast("请填写文献标题"); return; }
       const dup = findDuplicatePaper(title, state.editingPaperId);
-      if (dup && !confirm(`文献库中已存在标题相同的文献《${dup.title}》，确定仍要重复保存吗？`)) {
-        return;
-      }
+      if (dup && !confirm(`文献库中已存在标题相同的文献《${dup.title}》，确定仍要重复保存吗？`)) return;
       const authors = $("fAuthors").value.split(/[,，、;；]/).map((s) => s.trim()).filter(Boolean);
       const ts = nowIso();
       const payload = {
@@ -1469,7 +1463,7 @@ renderCats(); renderPapers(); renderDocs();
           const info = await res.json();
           state.serverMode = true;
           const statusEl = $("syncStatusText");
-          statusEl.textContent = `已直连本机服务「${info.folder || "文献检索软件"}」· Safari 实时同步中`;
+          statusEl.textContent = `已直连本机服务「${info.folder || "文献检索软件"}」· 实时同步中`;
           statusEl.classList.add("connected");
           $("btnConnectFolder").textContent = "本机服务已连接";
           $("btnConnectFolder").disabled = true;

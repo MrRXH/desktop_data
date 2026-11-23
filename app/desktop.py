@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-毕业设计文献检索与分类助手 - Mac / Windows 独立桌面软件入口
-特点：
-1. 界面静态资源打包进软件内部，双击弹出独立桌面窗口；
-2. 文献数据（data/）与论文产出区（writing_workspace/）始终保存在桌面「文献检索软件」文件夹，
-   方便 AI 新对话随时读取协作，不锁死在软件内部；
-3. 仅监听本机 127.0.0.1，不连外网，关闭窗口即自动退出服务。
+毕业设计文献检索与分类助手 - Mac / Windows 独立桌面软件入口 (V3.1)
+新增：手机随身版固定保存到 桌面/文献检索软件/mobile_export/ 并自动打开文件夹定位。
 """
 
 import json
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import threading
 import urllib.parse
@@ -24,14 +21,12 @@ import webview
 
 
 def get_resource_dir() -> Path:
-    """获取界面静态资源目录（兼容源码运行与 PyInstaller 打包后运行）。"""
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS)
     return Path(__file__).resolve().parent.parent
 
 
 def get_user_data_root() -> Path:
-    """统一将个人文献数据存放在桌面「文献检索软件」目录，方便随时备份与 AI 协作。"""
     desktop = Path.home() / "Desktop"
     root = (desktop / "文献检索软件") if desktop.exists() else (Path.home() / "文献检索软件")
     root.mkdir(parents=True, exist_ok=True)
@@ -43,15 +38,27 @@ USER_ROOT = get_user_data_root()
 DATA_DIR = USER_ROOT / "data"
 NOTES_DIR = DATA_DIR / "notes"
 WORKSPACE_DIR = USER_ROOT / "writing_workspace"
+EXPORT_DIR = USER_ROOT / "mobile_export"
 LIBRARY_FILE = DATA_DIR / "library.json"
+
+
+def reveal_file(target: Path) -> None:
+    """在 Mac 访达或 Windows 资源管理器中自动打开并高亮选中导出文件。"""
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(target)])
+        elif sys.platform == "win32":
+            subprocess.Popen(["explorer", "/select,", str(target)])
+    except Exception:
+        pass
 
 
 def init_user_workspace() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     NOTES_DIR.mkdir(parents=True, exist_ok=True)
     WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 首次在新电脑运行时自动复制 AI 协作说明书与初始化空文献库
     guide_src = RESOURCE_DIR / "AI_GUIDE.md"
     guide_dst = USER_ROOT / "AI_GUIDE.md"
     if guide_src.exists() and not guide_dst.exists():
@@ -200,6 +207,24 @@ class DesktopLitHandler(SimpleHTTPRequestHandler):
             LIBRARY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             sync_all_notes(data)
             self._send_json({"ok": True})
+            return
+        self._send_json({"error": "未知接口"}, 404)
+
+    def do_POST(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/api/export-mobile":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length).decode("utf-8")
+            payload = json.loads(raw)
+            filename = Path(str(payload.get("filename") or "文献随身版.html")).name
+            if not filename.endswith(".html"):
+                filename += ".html"
+            html_content = str(payload.get("html") or "")
+            EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+            target = EXPORT_DIR / filename
+            target.write_text(html_content, encoding="utf-8")
+            reveal_file(target)
+            self._send_json({"ok": True, "filename": filename, "path": str(target)})
             return
         self._send_json({"error": "未知接口"}, 404)
 
