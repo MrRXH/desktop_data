@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>毕业设计文献检索与分类助手（V3 试运行版）</title>
+  <link rel="stylesheet" href="./app/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- 顶部工具栏 -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-badge">V3</span>
+        <div>
+          <h1>毕业设计文献助手</h1>
+          <p class="brand-sub" id="syncStatusText">未连接本地文件夹（推荐使用本地服务打开）</p>
+        </div>
+      </div>
+
+      <div class="search-group">
+        <input id="searchInput" type="search" placeholder="搜索标题、作者、期刊、观点或笔记..." />
+        <button class="btn btn-ghost" id="btnGoCnki" title="带入当前关键词跳转到中国知网检索">知网搜</button>
+        <button class="btn btn-ghost" id="btnGoScholar" title="带入当前关键词跳转到谷歌学术检索">谷歌学术</button>
+      </div>
+
+      <div class="top-actions">
+        <button class="btn btn-primary" id="btnConnectFolder" title="选择桌面的「文献检索软件」文件夹，实现实时读写同步">连接文件夹</button>
+        <button class="btn btn-outline" id="btnRefreshSync" title="当 AI 在新对话中修改完文件后，点此立即同步最新内容">刷新同步</button>
+        <button class="btn btn-accent" id="btnOpenImport">引文导入</button>
+        <button class="btn btn-outline" id="btnAddPaper">+ 手动录入</button>
+        <button class="btn btn-ai" id="btnOpenAiPrompts" title="一键生成给新对话 AI 的写论文指令">写论文指令板</button>
+        <button class="btn btn-outline" id="btnOpenWorkspace">论文产出区</button>
+        <button class="btn btn-outline" id="btnExportMobile" title="打包全部文献笔记与产出区文档为单个离线 HTML，发到手机上课随时翻看">手机随身版</button>
+        <button class="btn btn-ghost" id="btnOpenSettings" title="预留外部 AI 接口与导入导出设置">设置</button>
+      </div>
+    </header>
+
+    <!-- 主体三栏 -->
+    <main class="main-grid">
+      <!-- 左栏：分类与标签 -->
+      <aside class="sidebar">
+        <section class="side-section">
+          <div class="section-head">
+            <h2>文献视图</h2>
+          </div>
+          <ul class="nav-list" id="smartFilterList">
+            <li class="nav-item active" data-filter="all">
+              <span>全部文献</span>
+              <span class="count-pill" id="countAll">0</span>
+            </li>
+            <li class="nav-item" data-filter="starred">
+              <span>★ 核心收藏</span>
+              <span class="count-pill" id="countStarred">0</span>
+            </li>
+          </ul>
+        </section>
+
+        <section class="side-section">
+          <div class="section-head">
+            <h2>论文章节分类</h2>
+            <button class="icon-btn" id="btnAddCategory" title="新建分类">＋</button>
+          </div>
+          <ul class="nav-list" id="categoryList"></ul>
+        </section>
+
+        <section class="side-section">
+          <div class="section-head">
+            <h2>阅读进度</h2>
+          </div>
+          <div class="chip-wrap" id="statusFilterWrap">
+            <button class="chip active" data-status="">全部</button>
+            <button class="chip" data-status="待读">待读</button>
+            <button class="chip" data-status="在读">在读</button>
+            <button class="chip" data-status="精读">精读</button>
+          </div>
+        </section>
+
+        <section class="side-section">
+          <div class="section-head">
+            <h2>多维标签</h2>
+          </div>
+          <div class="chip-wrap" id="tagFilterWrap"></div>
+        </section>
+      </aside>
+
+      <!-- 中栏：文献列表 -->
+      <section class="list-pane">
+        <div class="list-toolbar">
+          <div class="list-meta">
+            <label class="checkbox-inline">
+              <input type="checkbox" id="chkSelectAll" />
+              <span id="listTitle">全部文献</span>
+            </label>
+            <span class="muted" id="listCountText">0 篇</span>
+          </div>
+          <div class="list-tools-right">
+            <select id="sortSelect" aria-label="排序方式">
+              <option value="updated_desc">最近更新</option>
+              <option value="year_desc">年份由新到旧</option>
+              <option value="year_asc">年份由旧到新</option>
+            </select>
+            <button class="btn btn-sm btn-outline" id="btnBatchCite" disabled>批量导出引文</button>
+          </div>
+        </div>
+        <div class="paper-list" id="paperList"></div>
+      </section>
+
+      <!-- 右栏：详情与结构化笔记 -->
+      <section class="detail-pane" id="detailPane">
+        <div class="empty-state" id="emptyDetail">
+          <p class="empty-title">请选择左侧一篇文献查看详情</p>
+          <p class="muted">支持一键复制国标 / APA 引文、编辑结构化论文笔记，并实时同步给新对话的 AI 助手。</p>
+        </div>
+
+        <div class="detail-content hidden" id="detailContent">
+          <div class="detail-header">
+            <div class="detail-title-row">
+              <h2 id="detailTitle"></h2>
+              <div class="detail-header-actions">
+                <button class="icon-btn star-btn" id="btnToggleStar" title="标记核心收藏">☆</button>
+                <button class="btn btn-sm btn-outline" id="btnEditMeta">编辑信息</button>
+                <button class="btn btn-sm btn-danger-ghost" id="btnDeletePaper">删除</button>
+              </div>
+            </div>
+            <div class="meta-line" id="detailMetaLine"></div>
+            <div class="meta-controls">
+              <label>
+                分类：
+                <select id="detailCategorySelect"></select>
+              </label>
+              <label>
+                状态：
+                <select id="detailStatusSelect">
+                  <option value="待读">待读</option>
+                  <option value="在读">在读</option>
+                  <option value="精读">精读</option>
+                </select>
+              </label>
+              <label class="tags-input-wrap">
+                标签：
+                <input id="detailTagsInput" type="text" placeholder="逗号分隔，如 核心文献, 方法参考" />
+              </label>
+            </div>
+          </div>
+
+          <!-- 一键引文卡片 -->
+          <div class="card citation-card">
+            <div class="card-head">
+              <h3>一键参考文献与正文引用</h3>
+              <div class="citation-actions">
+                <button class="btn btn-sm btn-outline" id="btnCopyInline">复制正文夹注</button>
+                <button class="btn btn-sm btn-outline" id="btnCopyGbt">复制国标 GB/T 7714</button>
+                <button class="btn btn-sm btn-outline" id="btnCopyApa">复制 APA 格式</button>
+              </div>
+            </div>
+            <div class="citation-preview">
+              <div class="cite-row"><span class="cite-badge">夹注</span><span id="previewInline"></span></div>
+              <div class="cite-row"><span class="cite-badge">GB/T</span><span id="previewGbt"></span></div>
+              <div class="cite-row"><span class="cite-badge">APA</span><span id="previewApa"></span></div>
+            </div>
+          </div>
+
+          <!-- 摘要 -->
+          <div class="card">
+            <div class="card-head">
+              <h3>文献摘要</h3>
+              <button class="btn btn-sm btn-ghost" id="btnCopyAiPrompt" title="复制一段现成指令，粘贴到新对话即可让 AI 帮你提炼并写回文件夹">复制 AI 提炼指令</button>
+            </div>
+            <p class="abstract-text" id="detailAbstract"></p>
+          </div>
+
+          <!-- 面向写论文的四维结构化笔记 -->
+          <div class="card notes-card">
+            <div class="card-head">
+              <h3>写论文结构化笔记（自动同步至本地文件）</h3>
+              <button class="btn btn-sm btn-primary" id="btnSaveNotes">保存笔记</button>
+            </div>
+            <div class="notes-grid">
+              <label class="field">
+                <span>核心观点与主要结论</span>
+                <textarea id="noteCore" rows="3" placeholder="这篇文献最核心的论点或实证结论是什么？"></textarea>
+              </label>
+              <label class="field">
+                <span>研究方法与样本数据</span>
+                <textarea id="noteMethod" rows="3" placeholder="用了什么模型、案例、问卷或数据年份？"></textarea>
+              </label>
+              <label class="field">
+                <span>主要局限与研究缺口</span>
+                <textarea id="noteLimit" rows="2" placeholder="有哪些不足之处，可以引出你的毕业论文创新点？"></textarea>
+              </label>
+              <label class="field">
+                <span>个人启发与计划引用位置</span>
+                <textarea id="notePersonal" rows="2" placeholder="打算放在毕业论文哪一章？用来支持什么观点？"></textarea>
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 弹窗：知网 / 谷歌学术引文导入 -->
+  <div class="modal-backdrop hidden" id="modalImport">
+    <div class="modal modal-lg">
+      <div class="modal-head">
+        <h3>知网 / 谷歌学术引文一键导入</h3>
+        <button class="icon-btn close-modal" data-close="modalImport">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="help-tip">
+          直接粘贴从<strong>中国知网</strong>导出的 <code>RefWorks</code> / <code>BibTeX</code> / <code>国标参考文献</code>，或从<strong>谷歌学术</strong>点击“引用 → BibTeX”复制的文本（支持一次粘贴多篇）：
+        </p>
+        <div class="field">
+          <label>导入到哪个分类：</label>
+          <select id="importCategorySelect"></select>
+        </div>
+        <textarea id="importRawText" rows="10" placeholder="示例（知网 RefWorks 或谷歌学术 BibTeX）：
+RT Journal Article
+T1 数字经济对中小企业创新绩效的影响研究
+A1 张三;李四
+JF 管理世界
+YR 2024
+VO 40
+IS 3
+OP 45-62"></textarea>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost close-modal" data-close="modalImport">取消</button>
+        <button class="btn btn-primary" id="btnRunImport">解析并入库</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 弹窗：手动录入 / 编辑文献 -->
+  <div class="modal-backdrop hidden" id="modalPaperForm">
+    <div class="modal modal-lg">
+      <div class="modal-head">
+        <h3 id="paperFormTitle">手动录入文献</h3>
+        <button class="icon-btn close-modal" data-close="modalPaperForm">✕</button>
+      </div>
+      <div class="modal-body form-grid">
+        <label class="field span-2">
+          <span>文献标题 *</span>
+          <input id="fTitle" type="text" placeholder="输入完整标题" />
+        </label>
+        <label class="field">
+          <span>作者（多位用逗号隔开）</span>
+          <input id="fAuthors" type="text" placeholder="如：张明远, 李思琪" />
+        </label>
+        <label class="field">
+          <span>期刊 / 学位授予单位 / 出版社</span>
+          <input id="fJournal" type="text" placeholder="如：经济研究" />
+        </label>
+        <label class="field">
+          <span>发表年份</span>
+          <input id="fYear" type="text" placeholder="如：2024" />
+        </label>
+        <label class="field">
+          <span>文献类型（国标代码）</span>
+          <select id="fDocType">
+            <option value="J">J - 期刊文章</option>
+            <option value="D">D - 硕士/博士学位论文</option>
+            <option value="M">M - 专著/图书</option>
+            <option value="C">C - 会议论文</option>
+            <option value="R">R - 研究报告</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>卷 (Volume)</span>
+          <input id="fVolume" type="text" placeholder="如：46" />
+        </label>
+        <label class="field">
+          <span>期 (Issue)</span>
+          <input id="fIssue" type="text" placeholder="如：5" />
+        </label>
+        <label class="field">
+          <span>起止页码</span>
+          <input id="fPages" type="text" placeholder="如：78-94" />
+        </label>
+        <label class="field">
+          <span>语言</span>
+          <select id="fLanguage">
+            <option value="zh">中文</option>
+            <option value="en">英文</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>来源数据库</span>
+          <input id="fSource" type="text" placeholder="如：知网 CNKI / Google Scholar" />
+        </label>
+        <label class="field">
+          <span>所属分类</span>
+          <select id="fCategory"></select>
+        </label>
+        <label class="field span-2">
+          <span>摘要</span>
+          <textarea id="fAbstract" rows="4" placeholder="粘贴文献摘要，方便后续新对话 AI 提炼要点"></textarea>
+        </label>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost close-modal" data-close="modalPaperForm">取消</button>
+        <button class="btn btn-primary" id="btnSubmitPaperForm">保存文献</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 弹窗：AI 写论文快捷指令板（V2 新增） -->
+  <div class="modal-backdrop hidden" id="modalAiPrompts">
+    <div class="modal modal-lg">
+      <div class="modal-head">
+        <h3>AI 写论文快捷指令板（一键复制给新对话）</h3>
+        <button class="icon-btn close-modal" data-close="modalAiPrompts">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="help-tip">
+          新开对话并连接桌面 <code>文献检索软件</code> 文件夹后，点击下方任意卡片复制指令并发送，AI 会自动读取你的文献库并将成品存到「论文产出区」：
+        </p>
+        <div class="prompt-context-bar" id="promptContextSummary"></div>
+        <div class="prompt-grid" id="promptCardsContainer"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-primary close-modal" data-close="modalAiPrompts">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 弹窗：论文产出区（V2 升级漂亮表格排版渲染） -->
+  <div class="modal-backdrop hidden" id="modalWorkspace">
+    <div class="modal modal-xl">
+      <div class="modal-head">
+        <h3>论文写作产出区（writing_workspace）</h3>
+        <button class="icon-btn close-modal" data-close="modalWorkspace">✕</button>
+      </div>
+      <div class="modal-body workspace-layout">
+        <div class="workspace-sidebar">
+          <div class="workspace-tip">新对话中 AI 生成的综述草稿、对比表与大纲会自动显示在这里：</div>
+          <ul class="nav-list" id="workspaceFileList"></ul>
+        </div>
+        <div class="workspace-viewer">
+          <div class="viewer-head">
+            <span id="workspaceFileTitle">请选择左侧文档</span>
+            <div class="viewer-actions">
+              <div class="seg-toggle">
+                <button class="seg-btn active" id="btnWsPreviewMode">排版预览</button>
+                <button class="seg-btn" id="btnWsRawMode">Markdown 原文</button>
+              </div>
+              <button class="btn btn-sm btn-primary" id="btnCopyWorkspaceRich" title="复制带表格和标题的排版内容，可直接粘贴进 Word / WPS">复制到 Word</button>
+              <button class="btn btn-sm btn-outline" id="btnCopyWorkspaceContent">复制原文</button>
+            </div>
+          </div>
+          <div class="markdown-body" id="workspaceRendered"></div>
+          <pre class="workspace-pre hidden" id="workspaceFileContent"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 弹窗：批量导出参考文献 -->
+  <div class="modal-backdrop hidden" id="modalBatchCite">
+    <div class="modal modal-lg">
+      <div class="modal-head">
+        <h3>批量导出参考文献</h3>
+        <button class="icon-btn close-modal" data-close="modalBatchCite">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="tab-bar">
+          <button class="tab-btn active" data-cite-tab="gbt">国标 GB/T 7714</button>
+          <button class="tab-btn" data-cite-tab="apa">APA 格式</button>
+        </div>
+        <textarea id="batchCiteOutput" rows="10" readonly></textarea>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost close-modal" data-close="modalBatchCite">关闭</button>
+        <button class="btn btn-primary" id="btnCopyBatchCite">一键复制全部</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 弹窗：设置（AI 接口预留 + JSON 导入导出兜底） -->
+  <div class="modal-backdrop hidden" id="modalSettings">
+    <div class="modal modal-lg">
+      <div class="modal-head">
+        <h3>软件设置与 AI 接口预留</h3>
+        <button class="icon-btn close-modal" data-close="modalSettings">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-box">
+          <h4>1. 数据备份与手动同步</h4>
+          <p class="muted">当前推荐使用本机服务模式（Safari / Chrome 全自动同步），也支持随时导出备份 <code>library.json</code>。</p>
+          <div class="btn-row">
+            <button class="btn btn-outline" id="btnExportJson">导出 library.json</button>
+            <label class="btn btn-outline file-label">
+              导入 library.json
+              <input type="file" id="inputImportJson" accept=".json" hidden />
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-box">
+          <h4>2. 预留外部 AI 接口（可选，默认关闭）</h4>
+          <p class="muted">日常推荐直接使用顶部「写论文指令板」配合新对话协作，无需配 Key。此处预留给后续独立调用或移动端使用。</p>
+          <label class="checkbox-inline" style="margin-bottom: 10px;">
+            <input type="checkbox" id="cfgAiEnabled" />
+            <span>启用软件内外部 AI 接口</span>
+          </label>
+          <div class="form-grid">
+            <label class="field">
+              <span>模型服务商</span>
+              <select id="cfgAiProvider">
+                <option value="gemini">Google Gemini</option>
+                <option value="openai">OpenAI / 兼容接口</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>模型名称</span>
+              <input id="cfgAiModel" type="text" placeholder="如：gemini-2.5-flash 或 gpt-4o-mini" />
+            </label>
+            <label class="field">
+              <span>自定义 API 地址（可选）</span>
+              <input id="cfgAiBaseUrl" type="text" placeholder="留空使用官方默认地址" />
+            </label>
+            <label class="field">
+              <span>API Key（仅存本地）</span>
+              <input id="cfgAiKey" type="password" placeholder="暂未配置可留空" />
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost close-modal" data-close="modalSettings">关闭</button>
+        <button class="btn btn-primary" id="btnSaveSettings">保存设置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 轻提示 -->
+  <div class="toast hidden" id="toast"></div>
+
+  <script src="./app/app.js"></script>
+</body>
+</html>
