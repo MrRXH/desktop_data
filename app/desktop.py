@@ -43,6 +43,14 @@ PDF_DIR = DATA_DIR / "pdfs"
 WORKSPACE_DIR = USER_ROOT / "writing_workspace"
 EXPORT_DIR = USER_ROOT / "mobile_export"
 LIBRARY_FILE = DATA_DIR / "library.json"
+AI_SECRETS_FILE = DATA_DIR / "ai_secrets.local.json"
+
+
+def strip_ai_secrets(data: dict) -> dict:
+    ai_cfg = data.get("ai_config")
+    if isinstance(ai_cfg, dict) and "api_key" in ai_cfg:
+        ai_cfg.pop("api_key", None)
+    return data
 
 
 def reveal_file(target: Path) -> None:
@@ -105,7 +113,6 @@ def init_user_workspace() -> None:
                 "provider": "gemini",
                 "base_url": "",
                 "model": "gemini-2.5-flash",
-                "api_key": "",
             },
             "papers": [],
         }
@@ -189,6 +196,17 @@ class DesktopLitHandler(SimpleHTTPRequestHandler):
             self._send_json({"ok": True, "folder": USER_ROOT.name})
             return
 
+        if path == "/api/ai-secrets":
+            if AI_SECRETS_FILE.exists():
+                try:
+                    secrets = json.loads(AI_SECRETS_FILE.read_text(encoding="utf-8"))
+                    self._send_json({"api_key": str(secrets.get("api_key") or "")})
+                except Exception:
+                    self._send_json({"api_key": ""})
+            else:
+                self._send_json({"api_key": ""})
+            return
+
         if path == "/api/library":
             if LIBRARY_FILE.exists():
                 data = json.loads(LIBRARY_FILE.read_text(encoding="utf-8"))
@@ -228,8 +246,24 @@ class DesktopLitHandler(SimpleHTTPRequestHandler):
 
     def do_PUT(self):
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/ai-secrets":
+            payload = self._read_json()
+            api_key = str(payload.get("api_key") or "").strip()
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            AI_SECRETS_FILE.write_text(
+                json.dumps({"api_key": api_key}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            if sys.platform != "win32":
+                try:
+                    os.chmod(AI_SECRETS_FILE, 0o600)
+                except OSError:
+                    pass
+            self._send_json({"ok": True})
+            return
+
         if path == "/api/library":
-            data = self._read_json()
+            data = strip_ai_secrets(self._read_json())
             LIBRARY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             sync_all_notes(data)
             self._send_json({"ok": True})

@@ -6,8 +6,10 @@
 """
 
 import json
+import os
 import re
 import socket
+import sys
 import threading
 import urllib.parse
 import webbrowser
@@ -20,6 +22,14 @@ DATA_DIR = BASE_DIR / "data"
 NOTES_DIR = DATA_DIR / "notes"
 WORKSPACE_DIR = BASE_DIR / "writing_workspace"
 LIBRARY_FILE = DATA_DIR / "library.json"
+AI_SECRETS_FILE = DATA_DIR / "ai_secrets.local.json"
+
+
+def strip_ai_secrets(data: dict) -> dict:
+    ai_cfg = data.get("ai_config")
+    if isinstance(ai_cfg, dict) and "api_key" in ai_cfg:
+        ai_cfg.pop("api_key", None)
+    return data
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 NOTES_DIR.mkdir(parents=True, exist_ok=True)
@@ -96,6 +106,17 @@ class LocalLitHandler(SimpleHTTPRequestHandler):
             self._send_json({"ok": True, "folder": BASE_DIR.name})
             return
 
+        if path == "/api/ai-secrets":
+            if AI_SECRETS_FILE.exists():
+                try:
+                    secrets = json.loads(AI_SECRETS_FILE.read_text(encoding="utf-8"))
+                    self._send_json({"api_key": str(secrets.get("api_key") or "")})
+                except Exception:
+                    self._send_json({"api_key": ""})
+            else:
+                self._send_json({"api_key": ""})
+            return
+
         if path == "/api/library":
             if LIBRARY_FILE.exists():
                 data = json.loads(LIBRARY_FILE.read_text(encoding="utf-8"))
@@ -135,10 +156,28 @@ class LocalLitHandler(SimpleHTTPRequestHandler):
 
     def do_PUT(self):
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/ai-secrets":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length).decode("utf-8")
+            payload = json.loads(raw)
+            api_key = str(payload.get("api_key") or "").strip()
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            AI_SECRETS_FILE.write_text(
+                json.dumps({"api_key": api_key}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            if sys.platform != "win32":
+                try:
+                    os.chmod(AI_SECRETS_FILE, 0o600)
+                except OSError:
+                    pass
+            self._send_json({"ok": True})
+            return
+
         if path == "/api/library":
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length).decode("utf-8")
-            data = json.loads(raw)
+            data = strip_ai_secrets(json.loads(raw))
             LIBRARY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             sync_all_notes(data)
             self._send_json({"ok": True})

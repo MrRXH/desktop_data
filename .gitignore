@@ -1,5 +1,6 @@
-# 隐私保护：默认不上传你的个人文献库与论文草稿到 GitHub
+# 隐私保护：默认不上传你的个人文献库、本地密钥与论文草稿到 GitHub
 data/
+data/ai_secrets.local.json
 writing_workspace/
 
 # 系统与打包临时文件

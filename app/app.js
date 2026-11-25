@@ -3,6 +3,7 @@
   "use strict";
 
   const STORAGE_KEY = "thesis_lit_app_v1_library";
+  const AI_SECRET_STORAGE_KEY = "thesis_lit_app_v1_ai_secret";
 
   const DEFAULT_LIBRARY = {
     version: "1.0",
@@ -19,14 +20,14 @@
       enabled: false,
       provider: "gemini",
       base_url: "",
-      model: "gemini-2.5-flash",
-      api_key: ""
+      model: "gemini-2.5-flash"
     },
     papers: []
   };
 
   const state = {
     library: null,
+    aiApiKey: "",
     serverMode: false,
     dirHandle: null,
     filterType: "all",
@@ -245,8 +246,94 @@
     return JSON.parse(JSON.stringify(DEFAULT_LIBRARY));
   }
 
+  function sanitizeLibraryForPersistence(lib) {
+    const clone = { ...lib };
+    if (clone.ai_config && typeof clone.ai_config === "object") {
+      const { api_key: _dropped, ...safeAiConfig } = clone.ai_config;
+      clone.ai_config = safeAiConfig;
+    }
+    return clone;
+  }
+
   function saveLocalCache() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.library)); } catch (_) {}
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitizeLibraryForPersistence(state.library)));
+    } catch (_) {}
+  }
+
+  async function loadAiApiKey() {
+    let localKey = "";
+    try { localKey = localStorage.getItem(AI_SECRET_STORAGE_KEY) || ""; } catch (_) {}
+
+    if (state.serverMode) {
+      try {
+        const res = await fetch("/api/ai-secrets", { cache: "no-store" });
+        if (res.ok) {
+          const data = await res.json();
+          if (typeof data.api_key === "string") {
+            state.aiApiKey = data.api_key;
+            try { localStorage.setItem(AI_SECRET_STORAGE_KEY, data.api_key); } catch (_) {}
+            return;
+          }
+        }
+      } catch (_) {}
+    } else if (state.dirHandle) {
+      try {
+        const dataDir = await state.dirHandle.getDirectoryHandle("data", { create: true });
+        const secretHandle = await dataDir.getFileHandle("ai_secrets.local.json");
+        const file = await secretHandle.getFile();
+        const parsed = JSON.parse(await file.text());
+        if (parsed && typeof parsed.api_key === "string") {
+          state.aiApiKey = parsed.api_key;
+          try { localStorage.setItem(AI_SECRET_STORAGE_KEY, parsed.api_key); } catch (_) {}
+          return;
+        }
+      } catch (_) {}
+    }
+
+    state.aiApiKey = localKey;
+  }
+
+  async function saveAiApiKey(apiKey) {
+    const clean = String(apiKey || "").trim();
+    state.aiApiKey = clean;
+    try {
+      if (clean) localStorage.setItem(AI_SECRET_STORAGE_KEY, clean);
+      else localStorage.removeItem(AI_SECRET_STORAGE_KEY);
+    } catch (_) {}
+
+    if (state.serverMode) {
+      try {
+        await fetch("/api/ai-secrets", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ api_key: clean })
+        });
+      } catch (_) {}
+      return;
+    }
+
+    if (state.dirHandle) {
+      try {
+        const dataDir = await state.dirHandle.getDirectoryHandle("data", { create: true });
+        await writeFileText(dataDir, "ai_secrets.local.json", JSON.stringify({ api_key: clean }, null, 2));
+      } catch (_) {}
+    }
+  }
+
+  async function migrateLegacyApiKeyIfNeeded(parsed) {
+    const legacyKey = parsed?.ai_config?.api_key;
+    if (typeof legacyKey === "string" && legacyKey.trim()) {
+      if (!state.aiApiKey) {
+        await saveAiApiKey(legacyKey.trim());
+      }
+      delete parsed.ai_config.api_key;
+      return true;
+    }
+    if (parsed?.ai_config && "api_key" in parsed.ai_config) {
+      delete parsed.ai_config.api_key;
+    }
+    return false;
   }
 
   function buildNoteMarkdown(paper) {
@@ -293,6 +380,8 @@ ${n.personal_notes || "（待补充）"}
 
   async function persistLibrary(singleUpdatedPaper = null) {
     state.library.updated_at = nowIso();
+    const safeLibrary = sanitizeLibraryForPersistence(state.library);
+    state.library = safeLibrary;
     saveLocalCache();
 
     if (state.serverMode) {
@@ -300,7 +389,7 @@ ${n.personal_notes || "（待补充）"}
         const res = await fetch("/api/library", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(state.library)
+          body: JSON.stringify(safeLibrary)
         });
         if (!res.ok) throw new Error("保存接口返回异常");
       } catch (_) {
@@ -312,7 +401,7 @@ ${n.personal_notes || "（待补充）"}
     if (!state.dirHandle) return;
     try {
       const dataDir = await state.dirHandle.getDirectoryHandle("data", { create: true });
-      await writeFileText(dataDir, "library.json", JSON.stringify(state.library, null, 2));
+      await writeFileText(dataDir, "library.json", JSON.stringify(safeLibrary, null, 2));
       const notesDir = await dataDir.getDirectoryHandle("notes", { create: true });
       if (singleUpdatedPaper) {
         const safeId = String(singleUpdatedPaper.id).replace(/[^a-zA-Z0-9_\-]/g, "_");
@@ -335,11 +424,14 @@ ${n.personal_notes || "（待补充）"}
         if (!res.ok) return false;
         const parsed = await res.json();
         if (parsed && Array.isArray(parsed.papers)) {
+          const migrated = await migrateLegacyApiKeyIfNeeded(parsed);
           state.library = parsed;
           state.library.categories = state.library.categories || [];
           state.library.tags = state.library.tags || [];
-          state.library.ai_config = state.library.ai_config || DEFAULT_LIBRARY.ai_config;
+          state.library.ai_config = state.library.ai_config || { ...DEFAULT_LIBRARY.ai_config };
           saveLocalCache();
+          await loadAiApiKey();
+          if (migrated) await persistLibrary();
           return true;
         }
       } catch (_) {
@@ -359,11 +451,14 @@ ${n.personal_notes || "（待补充）"}
         const file = await libHandle.getFile();
         const parsed = JSON.parse(await file.text());
         if (parsed && Array.isArray(parsed.papers)) {
+          const migrated = await migrateLegacyApiKeyIfNeeded(parsed);
           state.library = parsed;
           state.library.categories = state.library.categories || [];
           state.library.tags = state.library.tags || [];
-          state.library.ai_config = state.library.ai_config || DEFAULT_LIBRARY.ai_config;
+          state.library.ai_config = state.library.ai_config || { ...DEFAULT_LIBRARY.ai_config };
           saveLocalCache();
+          await loadAiApiKey();
+          if (migrated) await persistLibrary();
           return true;
         }
       } catch (_) {
@@ -670,14 +765,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei
 .pill.active{background:#eff6ff;border-color:#2563eb;color:#2563eb;font-weight:600;}
 .wrap{padding:10px 14px;display:flex;flex-direction:column;gap:10px;}
 .card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:13px 14px;box-shadow:0 1px 2px rgba(15,23,42,.04);}
-.card-title{font-size:15.5px;font-weight:600;line-height:1.45;}
+.card-head{cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.card-title-row{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;}
+.card-title{font-size:15.5px;font-weight:600;line-height:1.45;flex:1;}
+.card-toggle{font-size:12px;color:#64748b;flex-shrink:0;padding-top:2px;}
 .card-sub{font-size:12.5px;color:#64748b;margin-top:4px;}
 .badges{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;}
 .b{font-size:11px;padding:2px 8px;border-radius:999px;background:#f1f5f9;color:#475569;}
 .b-cat{background:#eff6ff;color:#1d4ed8;}
 .b-st{background:#dcfce7;color:#166534;}
-.detail{margin-top:11px;padding-top:11px;border-top:1px dashed #e2e8f0;display:none;flex-direction:column;gap:8px;font-size:13.5px;}
+.detail{margin-top:11px;padding-top:11px;border-top:1px dashed #e2e8f0;display:none;flex-direction:column;gap:8px;font-size:13.5px;user-select:text;-webkit-user-select:text;}
 .card.open .detail{display:flex;}
+.card .lbl-close{display:none;}
+.card.open .lbl-open{display:none;}
+.card.open .lbl-close{display:inline;}
 .blk{background:#f8fafc;padding:9px 10px;border-radius:8px;}
 .blk-lbl{font-size:12px;font-weight:600;color:#2563eb;margin-bottom:2px;}
 .cite{font-size:12px;color:#334155;background:#f1f5f9;padding:8px 10px;border-radius:8px;word-break:break-all;}
@@ -750,12 +851,17 @@ function renderPapers(){
     const card = document.createElement("div");
     card.className = "card";
     card.innerHTML = \`
-      <div class="card-title">\${p.starred ? "★ " : ""}\${esc(p.title)}</div>
-      <div class="card-sub">\${esc(p.authors)} · \${esc(p.journal)} \${p.year ? "(" + esc(p.year) + ")" : ""}</div>
-      <div class="badges">
-        <span class="b b-cat">\${esc(p.category_name)}</span>
-        <span class="b b-st">\${esc(p.status)}</span>
-        \${(p.tags||[]).map(t => '<span class="b">' + esc(t) + '</span>').join("")}
+      <div class="card-head">
+        <div class="card-title-row">
+          <div class="card-title">\${p.starred ? "★ " : ""}\${esc(p.title)}</div>
+          <span class="card-toggle"><span class="lbl-open">展开 ▾</span><span class="lbl-close">收起 ▴</span></span>
+        </div>
+        <div class="card-sub">\${esc(p.authors)} · \${esc(p.journal)} \${p.year ? "(" + esc(p.year) + ")" : ""}</div>
+        <div class="badges">
+          <span class="b b-cat">\${esc(p.category_name)}</span>
+          <span class="b b-st">\${esc(p.status)}</span>
+          \${(p.tags||[]).map(t => '<span class="b">' + esc(t) + '</span>').join("")}
+        </div>
       </div>
       <div class="detail">
         \${n.core_viewpoint ? '<div class="blk"><div class="blk-lbl">核心观点</div><div>' + esc(n.core_viewpoint) + '</div></div>' : ''}
@@ -766,7 +872,7 @@ function renderPapers(){
         <div class="cite"><strong>正文夹注：</strong>\${esc(p.inlineCite)}<br/><strong>国标：</strong>\${esc(p.gbt)}</div>
       </div>
     \`;
-    card.onclick = () => card.classList.toggle("open");
+    card.querySelector(".card-head").onclick = () => card.classList.toggle("open");
     wrap.appendChild(card);
   });
 }
@@ -1048,9 +1154,103 @@ renderCats(); renderPapers(); renderDocs();
     sel.value = selectedId || (state.library.categories[0]?.id || "");
   }
 
+  function cleanDoiInput(raw) {
+    return String(raw || "")
+      .trim()
+      .replace(/^https?:\/\/(dx\.)?doi\.org\//i, "")
+      .replace(/^doi:\s*/i, "")
+      .trim();
+  }
+
+  function stripJatsXml(raw) {
+    return String(raw || "")
+      .replace(/<jats:title[^>]*>\s*Abstract\s*<\/jats:title>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  async function fetchMetadataByDoi() {
+    const doi = cleanDoiInput($("fDoi").value);
+    if (!doi) {
+      showToast("请先输入或粘贴 DOI（如 10.1016/...）");
+      return;
+    }
+    $("fDoi").value = doi;
+    const btn = $("btnFetchDoi");
+    const origText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "查询中...";
+
+    try {
+      const res = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, {
+        headers: { Accept: "application/json" }
+      });
+      if (!res.ok) {
+        throw new Error(res.status === 404 ? "未在 Crossref 查到该 DOI，请检查拼写" : `查询失败 (HTTP ${res.status})`);
+      }
+      const data = await res.json();
+      const msg = data?.message;
+      if (!msg) throw new Error("返回数据为空");
+
+      const title = Array.isArray(msg.title) ? (msg.title[0] || "") : (msg.title || "");
+      const journal = Array.isArray(msg["container-title"])
+        ? (msg["container-title"][0] || msg.publisher || "")
+        : (msg["container-title"] || msg.publisher || "");
+      const authors = (msg.author || []).map((a) => {
+        if (a.name) return a.name.trim();
+        const family = (a.family || "").trim();
+        const given = (a.given || "").trim();
+        if (!family && !given) return "";
+        if (/[\u4e00-\u9fff]/.test(family + given)) return `${family}${given}`;
+        return given ? `${given} ${family}` : family;
+      }).filter(Boolean);
+
+      const dateParts =
+        msg.published?.["date-parts"]?.[0] ||
+        msg["published-print"]?.["date-parts"]?.[0] ||
+        msg["published-online"]?.["date-parts"]?.[0] ||
+        msg.issued?.["date-parts"]?.[0] ||
+        [];
+      const year = dateParts[0] ? String(dateParts[0]) : "";
+
+      const typeMap = {
+        "journal-article": "J",
+        "dissertation": "D",
+        "book": "M",
+        "monograph": "M",
+        "book-chapter": "M",
+        "proceedings-article": "C",
+        "report": "R"
+      };
+      const docType = typeMap[msg.type] || "J";
+      const lang = detectLanguage(`${title} ${journal}`);
+
+      if (title) $("fTitle").value = title.replace(/\s+/g, " ").trim();
+      if (authors.length) $("fAuthors").value = authors.join("; ");
+      if (journal) $("fJournal").value = journal.replace(/\s+/g, " ").trim();
+      if (year) $("fYear").value = year;
+      $("fDocType").value = docType;
+      if (msg.volume) $("fVolume").value = String(msg.volume);
+      if (msg.issue) $("fIssue").value = String(msg.issue);
+      if (msg.page) $("fPages").value = String(msg.page).replace(/–/g, "-");
+      $("fLanguage").value = lang;
+      $("fSource").value = "Crossref (DOI)";
+      if (msg.abstract) $("fAbstract").value = stripJatsXml(msg.abstract);
+
+      showToast("已根据 DOI 自动填充文献信息，请核对后保存");
+    } catch (err) {
+      showToast(err.message || "查询 DOI 失败，请检查网络连接");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  }
+
   function openPaperForm(paper = null) {
     state.editingPaperId = paper ? paper.id : null;
     $("paperFormTitle").textContent = paper ? "编辑文献信息" : "手动录入文献";
+    $("fDoi").value = paper?.doi || "";
     $("fTitle").value = paper?.title || "";
     $("fAuthors").value = (paper?.authors || []).join(", ");
     $("fJournal").value = paper?.journal || "";
@@ -1254,20 +1454,23 @@ renderCats(); renderPapers(); renderDocs();
       window.open(q ? `https://scholar.google.com/scholar?q=${q}` : "https://scholar.google.com/", "_blank");
     });
 
-    // V4 批量导入完整 PDF 论文
-    $("inputBatchPdf").addEventListener("change", async (e) => {
-      const files = Array.from(e.target.files || []);
-      e.target.value = "";
-      if (!files.length) return;
-      showToast(`正在归档导入 ${files.length} 篇完整 PDF 论文...`);
+    async function importPdfFiles(files) {
+      const pdfFiles = Array.from(files || []).filter((f) =>
+        (f.name || "").toLowerCase().endsWith(".pdf") || f.type === "application/pdf"
+      );
+      if (!pdfFiles.length) {
+        showToast("请拖入或选择 .pdf 格式的论文文件");
+        return;
+      }
+      showToast(`正在归档导入 ${pdfFiles.length} 篇完整 PDF 论文...`);
       const catId = state.filterType === "category" ? state.filterCategoryId : (state.library.categories[0]?.id || "");
       const existingSet = new Set(state.library.papers.map((p) => normalizeTitle(p.title)));
       const ts = nowIso();
       let added = 0;
       let skipped = 0;
 
-      for (let idx = 0; idx < files.length; idx++) {
-        const f = files[idx];
+      for (let idx = 0; idx < pdfFiles.length; idx++) {
+        const f = pdfFiles[idx];
         const cleanTitle = f.name.replace(/\.pdf$/i, "").replace(/_/g, " ").trim() || "未命名 PDF 论文";
         const norm = normalizeTitle(cleanTitle);
         if (norm && existingSet.has(norm)) {
@@ -1315,6 +1518,41 @@ renderCats(); renderPapers(); renderDocs();
       if (added > 0 && skipped > 0) showToast(`已导入 ${added} 篇 PDF 论文，跳过 ${skipped} 篇重复`);
       else if (added > 0) showToast(`成功导入 ${added} 篇完整 PDF 论文，已归档至 data/pdfs/`);
       else if (skipped > 0) showToast(`所选 ${skipped} 篇 PDF 论文已存在，已自动跳过`);
+    }
+
+    // V4 批量导入完整 PDF 论文（点击选择 + 全窗口拖拽导入）
+    $("inputBatchPdf").addEventListener("change", async (e) => {
+      const files = Array.from(e.target.files || []);
+      e.target.value = "";
+      if (!files.length) return;
+      await importPdfFiles(files);
+    });
+
+    let dragDepth = 0;
+    const dropOverlay = $("pdfDropOverlay");
+    const hasFiles = (e) => Array.from(e.dataTransfer?.types || []).includes("Files");
+    window.addEventListener("dragenter", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepth++;
+      dropOverlay.classList.remove("hidden");
+    });
+    window.addEventListener("dragover", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    });
+    window.addEventListener("dragleave", (e) => {
+      if (!hasFiles(e)) return;
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) dropOverlay.classList.add("hidden");
+    });
+    window.addEventListener("drop", async (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepth = 0;
+      dropOverlay.classList.add("hidden");
+      await importPdfFiles(e.dataTransfer?.files || []);
     });
 
     // V4 单篇文献上传/更换 PDF、打开原文、解除绑定
@@ -1399,6 +1637,14 @@ renderCats(); renderPapers(); renderDocs();
       else showToast(`成功解析并导入 ${addedCount} 篇文献`);
     });
 
+    $("btnFetchDoi").addEventListener("click", fetchMetadataByDoi);
+    $("fDoi").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        fetchMetadataByDoi();
+      }
+    });
+
     $("btnAddPaper").addEventListener("click", () => openPaperForm(null));
     $("btnEditMeta").addEventListener("click", () => {
       const p = state.library.papers.find((x) => x.id === state.selectedPaperId);
@@ -1414,6 +1660,7 @@ renderCats(); renderPapers(); renderDocs();
       const ts = nowIso();
       const payload = {
         title, authors,
+        doi: cleanDoiInput($("fDoi").value),
         journal: $("fJournal").value.trim(), year: $("fYear").value.trim(),
         doc_type: $("fDocType").value, volume: $("fVolume").value.trim(),
         issue: $("fIssue").value.trim(), pages: $("fPages").value.trim(),
@@ -1427,7 +1674,7 @@ renderCats(); renderPapers(); renderDocs();
       } else {
         savedPaper = {
           id: `paper_${Date.now()}`,
-          ...payload, doi: "", url: "", pdf_file: "",
+          ...payload, url: "", pdf_file: "",
           tags: ["待读"], status: "待读", starred: false,
           notes: { core_viewpoint: "", methodology: "", limitations: "", personal_notes: "" },
           created_at: ts, updated_at: ts
@@ -1573,13 +1820,14 @@ renderCats(); renderPapers(); renderDocs();
       copyRichHtml($("workspaceRendered").innerHTML, state.currentWsRaw, "已复制带表格排版内容，可直接粘贴到 Word / WPS")
     );
 
-    $("btnOpenSettings").addEventListener("click", () => {
+    $("btnOpenSettings").addEventListener("click", async () => {
+      await loadAiApiKey();
       const cfg = state.library.ai_config || DEFAULT_LIBRARY.ai_config;
       $("cfgAiEnabled").checked = Boolean(cfg.enabled);
       $("cfgAiProvider").value = cfg.provider || "gemini";
       $("cfgAiModel").value = cfg.model || "";
       $("cfgAiBaseUrl").value = cfg.base_url || "";
-      $("cfgAiKey").value = cfg.api_key || "";
+      $("cfgAiKey").value = state.aiApiKey || "";
       openModal("modalSettings");
     });
 
@@ -1588,23 +1836,24 @@ renderCats(); renderPapers(); renderDocs();
         enabled: $("cfgAiEnabled").checked,
         provider: $("cfgAiProvider").value,
         model: $("cfgAiModel").value.trim(),
-        base_url: $("cfgAiBaseUrl").value.trim(),
-        api_key: $("cfgAiKey").value.trim()
+        base_url: $("cfgAiBaseUrl").value.trim()
       };
+      await saveAiApiKey($("cfgAiKey").value);
       await persistLibrary();
       closeModal("modalSettings");
-      showToast("设置已保存");
+      showToast("设置已保存（API Key 已独立存本机，不会写入 library.json）");
     });
 
     $("btnExportJson").addEventListener("click", () => {
-      const blob = new Blob([JSON.stringify(state.library, null, 2)], { type: "application/json" });
+      const safeLibrary = sanitizeLibraryForPersistence(state.library);
+      const blob = new Blob([JSON.stringify(safeLibrary, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = "library.json";
       a.click();
       URL.revokeObjectURL(url);
-      showToast("已导出 library.json");
+      showToast("已导出 library.json（不含 API Key）");
     });
 
     $("inputImportJson").addEventListener("change", (e) => {
@@ -1615,6 +1864,7 @@ renderCats(); renderPapers(); renderDocs();
         try {
           const parsed = JSON.parse(reader.result);
           if (!parsed || !Array.isArray(parsed.papers)) throw new Error("格式不正确");
+          await migrateLegacyApiKeyIfNeeded(parsed);
           state.library = parsed;
           state.selectedPaperId = state.library.papers[0]?.id || null;
           await persistLibrary();
@@ -1631,6 +1881,7 @@ renderCats(); renderPapers(); renderDocs();
 
   async function init() {
     state.library = loadLocalCache();
+    await migrateLegacyApiKeyIfNeeded(state.library);
     bindEvents();
 
     if (window.location.protocol.startsWith("http")) {
@@ -1648,6 +1899,7 @@ renderCats(); renderPapers(); renderDocs();
         }
       } catch (_) {}
     }
+    await loadAiApiKey();
 
     state.selectedPaperId = state.library.papers[0]?.id || null;
     renderAll();

@@ -31,8 +31,7 @@
     "enabled": false,
     "provider": "gemini",
     "base_url": "",
-    "model": "gemini-2.5-flash",
-    "api_key": ""
+    "model": "gemini-2.5-flash"
   },
   "papers": [
     {

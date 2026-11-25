@@ -260,6 +260,13 @@ OP 45-62"></textarea>
         <button class="icon-btn close-modal" data-close="modalPaperForm">✕</button>
       </div>
       <div class="modal-body form-grid">
+        <div class="field span-2">
+          <span>DOI（选填，粘贴后可一键联网自动填充元数据）</span>
+          <div class="doi-input-row">
+            <input id="fDoi" type="text" placeholder="如：10.1016/j.jbusres.2024.114514 或 https://doi.org/..." />
+            <button type="button" class="btn btn-accent" id="btnFetchDoi">按 DOI 自动填充</button>
+          </div>
+        </div>
         <label class="field span-2">
           <span>文献标题 *</span>
           <input id="fTitle" type="text" placeholder="输入完整标题" />
@@ -441,7 +448,7 @@ OP 45-62"></textarea>
               <input id="cfgAiBaseUrl" type="text" placeholder="留空使用官方默认地址" />
             </label>
             <label class="field">
-              <span>API Key（仅存本地）</span>
+              <span>API Key（独立存本机，不写入 library.json）</span>
               <input id="cfgAiKey" type="password" placeholder="暂未配置可留空" />
             </label>
           </div>
@@ -451,6 +458,15 @@ OP 45-62"></textarea>
         <button class="btn btn-ghost close-modal" data-close="modalSettings">关闭</button>
         <button class="btn btn-primary" id="btnSaveSettings">保存设置</button>
       </div>
+    </div>
+  </div>
+
+  <!-- 全屏 PDF 拖拽导入提示遮罩 -->
+  <div class="drop-overlay hidden" id="pdfDropOverlay">
+    <div class="drop-overlay-box">
+      <div class="drop-overlay-icon">📄</div>
+      <div class="drop-overlay-title">松开鼠标即可导入 PDF 论文</div>
+      <div class="drop-overlay-sub">支持一次拖入多篇完整 PDF，自动归档至 data/pdfs/ 并建立文献条目</div>
     </div>
   </div>
 
